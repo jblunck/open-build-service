@@ -1777,6 +1777,7 @@ sub getbinaries {
   mkdir_p($dir);
   my $kiwimode;
   $kiwimode = 1 if $buildinfo->{'file'} =~ /\.kiwi$/;
+  $kiwimode = 1 if $buildinfo->{'file'} =~ /\.livebuild$/;
 
   if ($kiwimode && $buildinfo->{'imagetype'} && $buildinfo->{'imagetype'}->[0] eq 'product') {
     return getbinaries_kiwiproduct($buildinfo, $dir, $srcdir);
@@ -2044,6 +2045,7 @@ sub dobuild {
   my $kiwimode;
   my $stats = {};
   $kiwimode = 1 if $buildinfo->{'file'} =~ /\.kiwi$/;
+  $kiwimode = 1 if $buildinfo->{'file'} =~ /\.livebuild$/;
   my $deltamode;
   $deltamode = 1 if $buildinfo->{'file'} eq '_delta';
   my $followupmode = $buildinfo->{'followupfile'};
