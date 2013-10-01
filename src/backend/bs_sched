@@ -627,7 +627,7 @@ sub set_building {
 
   # a new one. expand usedforbuild. write info file.
   my $prptype = $bconf->{'type'};
-  $info->{'file'} =~ /\.(spec|dsc|kiwi)$/;
+  $info->{'file'} =~ /\.(spec|dsc|kiwi|livebuild)$/;
   my $packtype = $1 || 'spec';
   $packtype = 'arch' if $info->{'file'} eq 'PKGBUILD';
   $packtype = 'preinstallimage' if $info->{'file'} eq '_preinstallimage';
@@ -6166,6 +6166,11 @@ my %handlers = (
     'check' => \&checkchannel,
     'rebuild' => \&rebuildchannel,
   },
+  'livebuild' => {
+    'expand' => \&no_expander,
+    'check' => \&checkkiwiimage,
+    'rebuild' => \&rebuildkiwiimage,
+  },
 );
 
 my $unknownchecker = {
@@ -7712,7 +7717,7 @@ NEXTPRP:
 	  $packtype = 'arch';
 	} elsif ($info->{'file'} eq '_preinstallimage') {
 	  $packtype = 'preinstallimage';
-	} elsif ($info->{'file'} =~ /\.(spec|dsc|kiwi)$/) {
+	} elsif ($info->{'file'} =~ /\.(spec|dsc|kiwi|livebuild)$/) {
 	  $packtype = $1;
 	  if ($packtype eq 'kiwi') {
 	    # check if it is kiwi-product
