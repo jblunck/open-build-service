@@ -678,6 +678,11 @@ sub set_building {
     push @bdeps, grep {/^kiwi-.*:/} @{$info->{'dep'} || []};
   }
 
+  if ($packtype eq 'livebuild') {
+    # packages used for build environment setup
+    @bdeps = ('live-build', 'apt-utils', 'tar');
+  }
+
   my $eok;
   ($eok, @bdeps) = Build::get_build($bconf, $subpacks, @bdeps);
   if (!$eok) {
@@ -735,7 +740,7 @@ sub set_building {
     $_->{'cbinstall'} = 1 if $cbdeps{$_->{'name'}};
     $_->{'runscripts'} = 1 if $runscripts{$_->{'name'}};
     $_->{'notmeta'} = 1 unless $edeps{$_->{'name'}};
-    $_->{'noinstall'} = 1 if $packtype eq 'kiwi' && $edeps{$_->{'name'}} && !($bdeps{$_->{'name'}} || $vmdeps{$_->{'name'}} || $pdeps{$_->{'name'}});
+    $_->{'noinstall'} = 1 if $packtype =~ /^(kiwi|livebuild)$/ && $edeps{$_->{'name'}} && !($bdeps{$_->{'name'}} || $vmdeps{$_->{'name'}} || $pdeps{$_->{'name'}});
   }
   if ($info->{'extrasource'}) {
     push @bdeps, map {{
@@ -5691,6 +5696,107 @@ sub rebuildpreinstallimage {
   return ('scheduled', $job);
 }
 
+##########################################################################
+##########################################################################
+##
+##  livebuild package type handling
+##
+sub checklivebuild {
+  my ($ctx, $packid, $pdata, $info) = @_;
+
+  my $projid = $ctx->{'project'};
+  my $repoid = $ctx->{'repository'};
+  my $prp = $ctx->{'prp'};
+  my $repo = $ctx->{'repo'};
+
+  my @aprps;
+  push @aprps, @{$ctx->{'prpsearchpath'} || []};
+
+  # get config from path
+  my $bconf = getconfig($myarch, \@aprps);
+  if (!$bconf) {
+    print "      - $packid (live-build)\n";
+    print "        no config\n";
+    return ('broken', 'no config');
+  }
+
+  my $pool = BSSolv::pool->new();
+  $pool->settype('deb') if $bconf->{'binarytype'} eq 'deb';
+
+  for my $aprp (@aprps) {
+    if (!checkprpaccess($aprp, $prp)) {
+      print "      - $packid (livebuild)\n";
+      print "        repository $aprp is unavailable";
+      return ('broken', "repository $aprp is unavailable");
+    }
+    my $r = addrepo($ctx, $pool, $aprp);
+    if (!$r) {
+      my $error = "repository '$aprp' is unavailable";
+      $error .= " (delayed)" if defined $r;
+      print "      - $packid (livebuild)\n";
+      print "        $error\n";
+      return ('delayed', $error) if defined $r;
+      return ('broken', $error);
+    }
+  }
+  $pool->createwhatprovides();
+  my $bconfignore = $bconf->{'ignore'};
+  my $bconfignoreh = $bconf->{'ignoreh'};
+  delete $bconf->{'ignore'};
+  delete $bconf->{'ignoreh'};
+  my @deps = @{$info->{'dep'} || []};
+  my $xp = BSSolv::expander->new($pool, $bconf);
+  my $ownexpand = sub {
+    $_[0] = $xp;
+    goto &BSSolv::expander::expand;
+  };
+  no warnings 'redefine';
+  local *Build::expand = $ownexpand;
+  use warnings 'redefine';
+  my ($eok, @edeps) = Build::get_deps($bconf, [], @deps);
+  if (!$eok) {
+    print "      - $packid (livebuild)\n";
+    print "        unresolvable:\n";
+    print "            $_\n" for @edeps;
+    return ('unresolvable', join(', ', @edeps));
+  }
+  $bconf->{'ignore'} = $bconfignore if $bconfignore;
+  $bconf->{'ignoreh'} = $bconfignoreh if $bconfignoreh;
+
+  my @new_meta;
+  push @new_meta, ($pdata->{'verifymd5'} || $pdata->{'srcmd5'})."  $packid";
+  for (@{$info->{'extrasource'} || []}) {
+    push @new_meta, "$_->{'srcmd5'}  $_->{'project'}/$_->{'package'}";
+  }
+
+  my $notready = $ctx->{'notready'};
+  my $prpnotready = $ctx->{'prpnotready'};
+  my @blocked;
+  for my $arepo ($pool->repos()) {
+    my $aprp = $arepo->name();
+    if (!$repo->{'block'} || $repo->{'block'} ne 'never') {
+      my $nr = ($prp eq $aprp ? $notready : $prpnotready->{$aprp}) || {};
+      my @b = grep {$nr->{$_}} @edeps;
+      if (@b) {
+	@b = map {"$aprp/$_"} @b if $prp ne $aprp;
+	push @blocked, @b;
+      }
+      next if @blocked;
+    }
+    my %names = $arepo->pkgnames();
+    for my $dep (sort(@edeps)) {
+      my $p = $names{$dep};
+      next unless $p;
+      push @new_meta, $pool->pkg2pkgid($p)."  $aprp/$dep";
+    }
+  }
+  if (@blocked) {
+    print "      - $packid (livebuild)\n";
+    print "        blocked (@blocked)\n";
+    return ('blocked', join(', ', @blocked));
+  }
+  return metacheck($ctx, $packid, 'livebuild', \@new_meta, [ $bconf, \@edeps ]);
+}
 
 ##########################################################################
 ##########################################################################
@@ -6168,7 +6274,7 @@ my %handlers = (
   },
   'livebuild' => {
     'expand' => \&no_expander,
-    'check' => \&checkkiwiimage,
+    'check' => \&checklivebuild,
     'rebuild' => \&rebuildkiwiimage,
   },
 );
