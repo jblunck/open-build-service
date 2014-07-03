@@ -3018,6 +3018,10 @@ sub getbuildinfo_post {
   } elsif ($bconf->{'type'} eq 'arch') {
     $d = Build::Arch::parse($bconf, $descr);
     $info->{'file'} = 'PKGBUILD';
+  } elsif ($bconf->{'type'} eq 'livebuild') {
+    $d = Build::LiveBuild::parse($bconf, $descr);
+    $info->{'path'} = $d->{'path'};
+    $info->{'file'} = 'upload.livebuild';
   } else {
     die("unknown repository type $bconf->{'type'}\n");
   }
@@ -3025,7 +3029,7 @@ sub getbuildinfo_post {
   unless (defined $d->{'name'}) {
     unlink("$dir/$_") for ls($dir);
     rmdir($dir) if -d $dir;
-    die("could not parse build description (spec/dsc/kiwi)\n");
+    die("could not parse build description (spec/dsc/kiwi/livebuild)\n");
   }
   $info->{'name'} = $d->{'name'};
   $info->{'dep'} = $d->{'deps'};
