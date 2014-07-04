@@ -2555,7 +2555,7 @@ sub getbuildinfo {
   die("bad info\n") unless $info && $info->{'repository'} eq $repoid;
 
   my $packtype = 'spec';
-  $packtype = $1 if $info->{'file'} && $info->{'file'} =~ /\.(spec|dsc|kiwi)$/;
+  $packtype = $1 if $info->{'file'} && $info->{'file'} =~ /\.(spec|dsc|kiwi|livebuild)$/;
 
   my @configpath;
   my $kiwitype;
@@ -2746,6 +2746,11 @@ sub getbuildinfo {
       @deps = ('kiwi') unless @deps;
     }
     push @deps, grep {/^kiwi-.*:/} @{$info->{'dep'} || []};
+  }
+
+  if ($packtype eq 'livebuild') {
+    # packages used for build environment setup
+    @deps = ('live-build', 'apt-utils', 'tar');
   }
 
   my $epool;
@@ -2955,7 +2960,7 @@ sub getbuildinfo {
     $b->{'cbinstall'} = 1 if $cbdeps{$_};
     $b->{'runscripts'} = 1 if $runscripts{$_};
     $b->{'notmeta'} = 1 unless $edeps{$_};
-    $b->{'noinstall'} = 1 if $packtype eq 'kiwi' && $edeps{$_} && !($bdeps{$_} || $vmdeps{$_} || $pdeps{$_});
+    $b->{'noinstall'} = 1 if $packtype =~ /^(kiwi|livebuild)$/ && $edeps{$_} && !($bdeps{$_} || $vmdeps{$_} || $pdeps{$_});
     $_ = $b;
   }
 
