@@ -628,7 +628,7 @@ sub set_building {
 
   # a new one. expand usedforbuild. write info file.
   my $prptype = $bconf->{'type'};
-  $info->{'file'} =~ /\.(spec|dsc|kiwi)$/;
+  $info->{'file'} =~ /\.(spec|dsc|kiwi|livebuild)$/;
   my $packtype = $1 || 'spec';
   $packtype = 'arch' if $info->{'file'} eq 'PKGBUILD';
   $packtype = 'preinstallimage' if $info->{'file'} eq '_preinstallimage';
@@ -691,6 +691,14 @@ sub set_building {
   if ($engine eq 'mock' && $packtype ne 'kiwi') {
     @sysdeps = @{$bconf->{'substitute'}->{'engine-packages:mock'} || []};
     @sysdeps = ('mock', 'createrepo') unless @sysdeps;   # default
+  }
+  elsif ($engine eq 'livebuild') {
+    # packages used for build environment setup (build-recipe-livebuild deps)
+    @sysdeps = @{$bconf->{'substitute'}->{'engine-packages:livebuild'} || []};
+    @sysdeps = ('apt-utils', 'dpkg-dev', 'live-build', 'lsb-release', 'tar')
+      unless @sysdeps;
+  }
+  if (@sysdeps) {
     ($eok, @sysdeps) = Build::get_build($bconf, [], @sysdeps);
     if (!$eok) {
       print "        unresolvable:\n";
@@ -6932,6 +6940,11 @@ my %handlers = (
     'check' => \&checkchannel,
     'rebuild' => \&rebuildchannel,
   },
+  'livebuild' => {
+    'expand' => \&Build::get_deps,
+    'check' => \&checkpackage,
+    'rebuild' => \&rebuildpackage,
+  },
 );
 
 my $unknownchecker = {
@@ -8510,7 +8523,7 @@ NEXTPRP:
 	  $packtype = 'arch';
 	} elsif ($info->{'file'} eq '_preinstallimage') {
 	  $packtype = 'preinstallimage';
-	} elsif ($info->{'file'} =~ /\.(spec|dsc|kiwi)$/) {
+	} elsif ($info->{'file'} =~ /\.(spec|dsc|kiwi|livebuild)$/) {
 	  $packtype = $1;
 	  if ($packtype eq 'kiwi') {
 	    # check if it is kiwi-product
