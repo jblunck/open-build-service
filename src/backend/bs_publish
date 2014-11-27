@@ -70,35 +70,6 @@ my @binsufs = qw{rpm deb pkg.tar.gz pkg.tar.xz};
 my $binsufsre = join('|', map {"\Q$_\E"} @binsufs);
 my @binsufsrsync = map {"--include=*.$_"} @binsufs;
 
-sub notify {
-  my ($type, $p, $payload) = @_;
-  # strip
-  $p = { map {$_ => $p->{$_}} grep {defined($p->{$_}) && !ref($p->{$_})} sort keys %{$p || {}} };
-  if (0) {
-    BSNotify::notify($type, $p);
-  } else {
-    # always route over to the src server
-    my $param = {
-      'uri' => "$BSConfig::srcserver/notify/$type",
-      'request' => 'POST',
-      'headers' => [ 'Content-Type: application/x-www-form-urlencoded' ],
-      'timeout' => 60,
-    };
-    if ($payload) {
-      $param->{'headers'} = [ 'Content-Type: application/octet-stream' ];
-      $param->{'data'} = $payload;
-    }
-    my @args = map {"$_=$p->{$_}"} sort keys %$p;
-    eval {
-      BSRPC::rpc($param, undef, @args);
-    };
-    if ($@) {
-      die($@) if $payload;	# payload transfers are fatal
-      warn($@);
-    }
-  }
-}
-
 sub qsystem {
   my @args = @_;
   my $pid;
@@ -163,28 +134,6 @@ sub fillpkgdescription {
 
 
 ############################################################################################
-
-#sub db_open {
-#  my ($name) = @_;
-#  return undef unless $extrepodb;
-#  return undef if $name eq 'repoinfo';
-#  mkdir_p($extrepodb) unless -d $extrepodb;
-#  return BSDB::opendb($extrepodb, $name);
-#}
-#
-#sub db_updateindex_rel {
-#  my ($db, $rem, $add) = @_;
-#  $db->updateindex_rel($rem, $add);
-#}
-#
-#sub db_store {
-#  my ($db, $k, $v) = @_;
-#  $db->store($k, $v);
-#}
-#
-#sub db_sync {
-#}
-
 
 my @db_sync;
 my $db_oldsync_read;
@@ -1245,7 +1194,7 @@ sub deleterepo {
   if (!$dbgsplit && $BSConfig::packtrack && (($repoinfo->{'projectkind'} || '') eq 'maintenance_release' || grep {$prp =~ /^$_/} @$BSConfig::packtrack)) {
     my $packtrack = {};
     print "    sending binary release tracking notification\n";
-    notify('PACKTRACK', { project => $projid , 'repo' => $repoid }, Storable::nfreeze([ map { $packtrack->{$_} } sort keys %$packtrack ]));
+    BSNotify::notify('PACKTRACK', { project => $projid , 'repo' => $repoid }, Storable::nfreeze([ map { $packtrack->{$_} } sort keys %$packtrack ]));
   }
 
   # delete repoinfo
@@ -2080,7 +2029,7 @@ publishprog_done:
     qsystem(@$hook, $prp, $extrep, @changed) && warn("    @$hook failed: $?\n");
   }
 
-  notify('REPO_PUBLISHED', { project => $projid , 'repo' => $repoid });
+  BSNotify::notify('REPO_PUBLISHED', { project => $projid , 'repo' => $repoid });
 
   # all done. till next time...
   if ($BSConfig::publishprogram && $BSConfig::publishprogram->{$prp}) {
@@ -2107,7 +2056,7 @@ publishprog_done:
     }
     # send notification
     print "    sending binary release tracking notification\n";
-    notify('PACKTRACK', { project => $projid , 'repo' => $repoid }, Storable::nfreeze([ map { $packtrack->{$_} } sort keys %$packtrack ]));
+    BSNotify::notify('PACKTRACK', { project => $projid , 'repo' => $repoid }, Storable::nfreeze([ map { $packtrack->{$_} } sort keys %$packtrack ]));
   }
 
 }
@@ -2120,6 +2069,67 @@ sub clear_repoinfo_state {
       delete $repoinfo->{'state'};
       BSUtil::store("$reporoot/$prp/.:repoinfo", "$reporoot/$prp/:repoinfo", $repoinfo);
     }
+  }
+}
+
+my %publish_retry;
+my %publish_lasttime;
+my %publish_duration;
+
+sub process_event {
+  my ($eventfile, $event) = @_;
+  my $ev = readxml($eventfile, $BSXML::event, 1);
+  if ($ev && $ev->{'type'} eq 'configuration') {
+    print "updating configuration\n";
+    BSConfiguration::update_from_configuration();
+  }
+  if (!$ev || !$ev->{'type'} || $ev->{'type'} ne 'publish') {
+    unlink($eventfile);
+    next;
+  }
+  if (!defined($ev->{'project'}) || !defined($ev->{'repository'})) {
+    unlink($eventfile);
+    next;
+  }
+  my $prp = "$ev->{'project'}/$ev->{'repository'}";
+  if ($BSConfig::publishprogram && $BSConfig::publishprogram->{$prp}) {
+    # check if background publish is still running
+    local *PPLOCK;
+    if (open(PPLOCK, '<', "$reporoot/$prp/.pplock")) {
+      if (flock(PPLOCK, LOCK_EX | LOCK_NB)) {
+        close PPLOCK;
+        print "$prp: external publish program still running\n";
+        $publish_retry{$event} = time() + 60;
+        next;
+      }
+      close PPLOCK;
+    }
+  }
+  my $starttime = time();
+  if ($publish_lasttime{$prp} && $publish_duration{$prp} > 300 && $publish_lasttime{$prp} + 5 * $publish_duration{$prp} > $starttime) {
+    print "$prp: not yet\n";
+    $publish_retry{$event} = $starttime + 60 * 5;
+    next;
+  }
+  rename("$myeventdir/$event", "$myeventdir/${event}::inprogress");
+  BSNotify::notify('REPO_PUBLISH_STATE', { 'project' => $ev->{'project'}, 'repo' => $ev->{'repository'}, 'state' => 'publishing'} );
+  eval {
+    publish($ev->{'project'}, $ev->{'repository'});
+  };
+  if ($@) {
+    warn("publish failed for $ev->{'project'}, $ev->{'repository'} : $@");
+    # delete state from repoinfo so that we will always re-publish
+    clear_repoinfo_state($prp);
+    rename("$myeventdir/${event}::inprogress", "$myeventdir/$event");
+    $publish_retry{$event} = time() + 60;
+    db_sync();
+  } else {
+    my $now = time();
+    $publish_lasttime{$prp} = $now;
+    $publish_duration{$prp} = $now - $starttime;
+    BSNotify::notify('REPO_PUBLISH_STATE', { 'project' => $ev->{'project'}, 'repo' => $ev->{'repository'}, 'state' => 'published'} );
+    db_sync();
+    unlink($eventfile."::inprogress");
   }
 }
 
@@ -2142,9 +2152,11 @@ sysopen(PING, "$myeventdir/.ping", POSIX::O_RDWR) || die("$myeventdir/.ping: $!"
 
 db_sync();
 
-my %publish_retry;
-my %publish_lasttime;
-my %publish_duration;
+# process a single event
+if (@ARGV && $ARGV[0] eq '--event') {
+  process_event($ARGV[1]);
+  exit(0);
+}
 
 while(1) {
   # drain ping pipe
@@ -2160,59 +2172,7 @@ while(1) {
     next if $publish_retry{$event};
     last if -e "$rundir/bs_publish.exit";
     last if -e "$rundir/bs_publish.restart";
-    my $ev = readxml("$myeventdir/$event", $BSXML::event, 1);
-    if ($ev && $ev->{'type'} eq 'configuration') {
-      print "updating configuration\n";
-      BSConfiguration::update_from_configuration();
-    }
-    if (!$ev || !$ev->{'type'} || $ev->{'type'} ne 'publish') {
-      unlink("$myeventdir/$event");
-      next;
-    }
-    if (!defined($ev->{'project'}) || !defined($ev->{'repository'})) {
-      unlink("$myeventdir/$event");
-      next;
-    }
-    my $prp = "$ev->{'project'}/$ev->{'repository'}";
-    if ($BSConfig::publishprogram && $BSConfig::publishprogram->{$prp}) {
-      # check if background publish is still running
-      local *PPLOCK;
-      if (open(PPLOCK, '<', "$reporoot/$prp/.pplock")) {
-        if (flock(PPLOCK, LOCK_EX | LOCK_NB)) {
-	  close PPLOCK;
-	  print "$prp: external publish program still running\n";
-	  $publish_retry{$event} = time() + 60;
-	  next;
-	}
-	close PPLOCK;
-      }
-    }
-    my $starttime = time();
-    if ($publish_lasttime{$prp} && $publish_duration{$prp} > 300 && $publish_lasttime{$prp} + 5 * $publish_duration{$prp} > $starttime) {
-      print "$prp: not yet\n";
-      $publish_retry{$event} = $starttime + 60 * 5;
-      next;
-    }
-    rename("$myeventdir/$event", "$myeventdir/${event}::inprogress");
-    notify('REPO_PUBLISH_STATE', { 'project' => $ev->{'project'}, 'repo' => $ev->{'repository'}, 'state' => 'publishing'} );
-    eval {
-      publish($ev->{'project'}, $ev->{'repository'});
-    };
-    if ($@) {
-      warn("publish failed for $ev->{'project'}, $ev->{'repository'} : $@");
-      # delete state from repoinfo so that we will always re-publish
-      clear_repoinfo_state($prp);
-      rename("$myeventdir/${event}::inprogress", "$myeventdir/$event");
-      $publish_retry{$event} = time() + 60;
-      db_sync();
-    } else {
-      my $now = time();
-      $publish_lasttime{$prp} = $now;
-      $publish_duration{$prp} = $now - $starttime;
-      notify('REPO_PUBLISH_STATE', { 'project' => $ev->{'project'}, 'repo' => $ev->{'repository'}, 'state' => 'published'} );
-      db_sync();
-      unlink("$myeventdir/${event}::inprogress");
-    }
+    process_event("$myeventdir/$event", $event);
   }
 
   # check for restart/exit
