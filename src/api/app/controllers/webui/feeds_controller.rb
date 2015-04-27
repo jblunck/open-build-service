@@ -12,7 +12,9 @@ class Webui::FeedsController < Webui::WebuiController
 
   def latest_updates
     raise ActionController::RoutingError.new('expected application/rss') unless request.format == Mime::RSS
-    @latest_updates = get_latest_updated(10)
+    @limit = params[:limit] unless params[:limit].blank?
+    @limit ||= 10
+    @latest_updates = get_latest_updated(@limit)
   end
 
   def commits
