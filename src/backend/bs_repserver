@@ -1218,7 +1218,8 @@ sub getbinary_repository {
   forwardevent($cgi, 'scanrepo', $projid, undef, $repoid, $arch) if $needscan;
   return getbinary_info($cgi, $projid, $repoid, $arch, $path) if $view eq 'fileinfo' || $view eq 'fileinfo_ext';
   die("unknown view '$view'\n") if $view;
-  my $type = 'application/octet-stream';
+  my $type = BSUtil::xsystem(undef, 'file', '--brief', '--mime-type', $path);
+  $type = 'application/octet-stream' unless $type;
   $type = 'application/x-rpm' if $path=~ /\.rpm$/;
   $type = 'application/x-debian-package' if $path=~ /\.deb$/;
   BSWatcher::reply_file($path, "Content-Type: $type");
@@ -1246,7 +1247,8 @@ sub getbinary {
   my $view = $cgi->{'view'} || '';
   return getbinary_info($cgi, $projid, $repoid, $arch, $path) if $view eq 'fileinfo' || $view eq 'fileinfo_ext';
   die("unknown view '$view'\n") if $view;
-  my $type = 'application/octet-stream';
+  my $type = BSUtil::xsystem(undef, 'file', '--brief', '--mime-type', $path);
+  $type = 'application/octet-stream' unless $type;
   $type = 'application/x-rpm' if $path=~ /\.rpm$/;
   $type = 'application/x-debian-package' if $path=~ /\.deb$/;
   BSServer::reply_file($path, "Content-Type: $type");
